@@ -38,12 +38,13 @@ const conversations = {};
 
 // ================================================= [ - Variables - ]
 let config = fs.readJsonSync("./database.json") || {
-    messageEvery: 5, // in minutes
+    messageEvery: 20, // in minutes
     currentVerse: "1:1", // IDs of [surah:ayah]
     ayahs_read: 0,
     surahs_read: 0,
     up_time: 0,
     sealed: 0,
+    seal_started_at: null,
     bsmAllah: "بِسْمِ ٱللَّهِ ٱلرَّحْمَٰنِ ٱلرَّحِيمِ",
     groups: ["120363076283863739"],
     prefix: "!",
@@ -58,7 +59,7 @@ let config = fs.readJsonSync("./database.json") || {
 class Interval {
     start() {
         config.online_since = Date.now();
-        let secondsToStart = this.getSecondsLeftToStart();
+        let secondsToStart = Math.abs(this.getSecondsLeftToStart()) + 10;
         global.print(`Starting interval in ${secondsToStart} seconds.`);
         setTimeout(() => {
             this.send();
@@ -67,20 +68,22 @@ class Interval {
             }, config.messageEvery * 1000 * 60);
         }, 1000 * secondsToStart);
     }
-    send() {
+    send(handle = true) {
         let ayah = global.getCurrentAyah();
         app.sendMessageToAllGroups(
             `\"${ayah.text}\"\n\nسورة ${global.getCurrentSurah().name} - آية ${
                 ayah.id
             }`
         );
-        global.handleAddingVerse();
+        if (handle) global.handleAddingVerse();
         global.saveConfig();
     }
     getSecondsLeftToStart() {
         let date = new Date();
-        let seconds = 600 - ((date.getMinutes() % 10) * 60 + date.getSeconds());
-        return seconds == 600 ? 0 : seconds;
+        let seconds =
+            config.messageEvery * 60 -
+            ((date.getMinutes() % 10) * 60 + date.getSeconds());
+        return seconds == config.messageEvery * 60 ? 0 : seconds;
     }
 }
 
@@ -106,33 +109,37 @@ class WhatsApp {
                 let _args = msg.body.split(/ +/g);
                 let args = _args.slice(1);
                 let cmd = _args[0].slice(config.prefix.length).toLowerCase();
-                if (!msg.body.startsWith(config.prefix)) {
-                    if (
-                        !(
-                            !config.whitelisted ? [] : config.whitelisted
-                        ).includes(global.getNumber(msg.from))
-                    )
-                        return;
-                    let accurate = customCMDS.includes(_args[0].toLowerCase());
-                    let conversation = conversations[msg.from];
-                    if (!conversation) conversation = defPrompt;
-                    conversation.push({ role: "user", content: msg.body });
-                    let response = await global.getAIResponse(
-                        accurate,
-                        msg.body,
-                        conversation
-                    );
-                    if (accurate)
-                        conversation.push({
-                            role: "assistant",
-                            content: response,
-                        });
-                    conversations[msg.from] = conversation;
-                    msg.reply(
-                        !response ? `Error occurred! !حدث خطأ` : response
-                    );
-                    return;
-                }
+                // if (!msg.body.startsWith(config.prefix)) {
+                //     if (
+                //         !(
+                //             !config.whitelisted ? [] : config.whitelisted
+                //         ).includes(global.getNumber(msg.from))
+                //     )
+                //         return;
+                //     let accurate = customCMDS.includes(_args[0].toLowerCase());
+                //     let conversation = conversations[msg.from];
+                //     if (!conversation) conversation = defPrompt;
+                //     conversation.push({ role: "user", content: msg.body });
+                //     if (JSON.stringify(conversation).length >= 9000) {
+                //         conversation = defPrompt;
+                //         conversation.push({ role: "user", content: msg.body });
+                //     }
+                //     let response = await global.getAIResponse(
+                //         accurate,
+                //         msg.body,
+                //         conversation
+                //     );
+                //     if (accurate)
+                //         conversation.push({
+                //             role: "assistant",
+                //             content: response,
+                //         });
+                //     conversations[msg.from] = conversation;
+                //     msg.reply(
+                //         !response ? `Error occurred! !حدث خطأ` : response
+                //     );
+                //     return;
+                // }
                 if (
                     cmd == "whitelist" &&
                     msg.from.includes(config.developer.id)
@@ -289,16 +296,32 @@ class Global {
         return this.getCurrentAyah_ID() == 1;
     }
     isLastVerse() {
-        return this.getCurrentSurah().total_verses == this.getCurrentAyah_ID();
+        return this.getCurrentSurah().total_verses <= this.getCurrentAyah_ID();
+    }
+    seal() {
+        console.log("Sealing in 5 seconds...");
+        setTimeout(() => {
+            config.sealed = config.sealed + 1;
+            console.log("SEALED");
+            process.exit(1);
+        }, 5000);
     }
     handleAddingVerse(verse = config.currentVerse) {
         if (!client.isConnected) return;
-        else if (this.isLastSurah() && this.isLastVerse()) {
-            config.sealed = config.sealed + 1;
+        if (config.currentVerse == "1:1") config.seal_started_at = Date.now();
+        if (this.isLastSurah() && this.isLastVerse()) {
+            interval.send(false);
+            this.print(
+                `Finished ${surah.id}-${surah.transliteration} [${surah.total_verses}]`
+            );
+            config.surahs_read = config.surahs_read + 1;
+            this.seal();
             return (config.currentVerse = `1:1`);
         } else if (this.isLastVerse()) {
             let surah = this.getCurrentSurah();
-            this.print(`Finished ${surah.name} [${surah.total_verses}]`);
+            this.print(
+                `Finished ${surah.id}-${surah.transliteration} [${surah.total_verses}]`
+            );
             config.surahs_read = config.surahs_read + 1;
             return (config.currentVerse = `${this.getCurrentSurah_ID() + 1}:1`);
         } else {
@@ -309,7 +332,7 @@ class Global {
         }
     }
     isLastSurah() {
-        return this.getCurrentSurah_ID() == 114;
+        return this.getCurrentSurah_ID() >= 114;
     }
     saveConfig() {
         config.up_time = (Date.now() - config.online_since) / 3600000;
@@ -325,7 +348,7 @@ class Global {
                               model: "gpt-3.5-turbo",
                               messages: conversation,
                               temperature: 0.3,
-                              max_tokens: 2000,
+                              max_tokens: 4000,
                           },
                           { timeout: 1000 * 60 * 1.5 }
                       )
@@ -343,6 +366,9 @@ class Global {
                   ).data.choices[0].text.replace("\n\n", "");
         } catch (error) {
             console.log(error);
+            console.log("----------------------------------------------");
+            global.print(`ChatGPT Error: ${error.message}`);
+            console.log("----------------------------------------------");
             return `Error occurred! !حدث خطأ`;
         }
     };
